@@ -79,28 +79,43 @@ func TraceBorStateSyncTxnDebugAPI(
 }
 
 func TraceBorStateSyncTxnTraceAPI(
-	ctx context.Context,
-	vmConfig *vm.Config,
-	chainConfig *chain.Config,
-	ibs *state.IntraBlockState,
-	stateWriter state.StateWriter,
-	blockCtx evmtypes.BlockContext,
-	blockHash common.Hash,
-	blockNum uint64,
-	blockTime uint64,
-	msgs []*types.Message,
-	tracer *tracers.Tracer,
+    ctx context.Context,
+    vmConfig *vm.Config,
+    chainConfig *chain.Config,
+    ibs *state.IntraBlockState,
+    stateWriter state.StateWriter,
+    blockCtx evmtypes.BlockContext,
+    blockHash common.Hash,
+    blockNum uint64,
+    blockTime uint64,
+    msgs []*types.Message,
+    tracer *tracers.Tracer,
 ) (*evmtypes.ExecutionResult, error) {
-	stateReceiverContract := chainConfig.Bor.(*borcfg.BorConfig).StateReceiverContractAddress()
-	if tracer != nil {
-		vmConfig.Tracer = NewBorStateSyncTxnTracer(tracer, stateReceiverContract).Hooks
-	}
+    stateReceiverContract := chainConfig.Bor.(*borcfg.BorConfig).StateReceiverContractAddress()
+    if tracer != nil {
+        vmConfig.Tracer = NewBorStateSyncTxnTracer(tracer, stateReceiverContract).Hooks
+    }
 
-	txCtx := initStateSyncTxContext(blockNum, blockHash)
-	rules := chainConfig.Rules(blockNum, blockTime)
-	evm := vm.NewEVM(blockCtx, txCtx, ibs, chainConfig, *vmConfig)
+    txCtx := initStateSyncTxContext(blockNum, blockHash)
+    rules := chainConfig.Rules(blockNum, blockTime)
+    evm := vm.NewEVM(blockCtx, txCtx, ibs, chainConfig, *vmConfig)
+    // Emit tx-boundary hooks so the wrapper can synthesize a top-level exit,
+    // ensuring gasUsed is set on the synthetic CALL frame in OE traces.
+    if vmConfig != nil && vmConfig.Tracer != nil && vmConfig.Tracer.OnTxStart != nil {
+        vmConfig.Tracer.OnTxStart(evm.GetVMContext(), bortypes.NewBorTransaction(), common.Address{})
+    }
 
-	return traceBorStateSyncTxn(ctx, ibs, stateWriter, msgs, evm, rules, txCtx, true)
+    res, err := traceBorStateSyncTxn(ctx, ibs, stateWriter, msgs, evm, rules, txCtx, true)
+
+    if vmConfig != nil && vmConfig.Tracer != nil && vmConfig.Tracer.OnTxEnd != nil {
+        var used uint64
+        if res != nil {
+            used = res.GasUsed
+        }
+        vmConfig.Tracer.OnTxEnd(&types.Receipt{GasUsed: used}, err)
+    }
+
+    return res, err
 }
 
 func traceBorStateSyncTxn(
